@@ -1,4 +1,4 @@
-import os, pyodbc, csv, datetime, collections
+import os, pyodbc, csv, datetime, collections, pandas
 
 
 CONN_STR = "DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};UID={username};PWD={password};"
@@ -306,10 +306,43 @@ class EtlHandler:
 
         conn.commit()
 
-    def make_querys(
-        self,
-    ):
-        print("done")
+    def save_to_csv(self, result, file, headers=None):
+        with open(file, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+
+            if headers:
+                writer.writerow(headers)
+
+            for item in result:
+                writer.writerow(item)
+
+    def query_1(self, cursor):
+        return cursor.execute("select count(1) from Location;")
+
+    def make_querys(self, number, output_dir="/workspace/results"):
+        try:
+            query = getattr(
+                self,
+                "query_{}".format(number),
+            )
+            filename = "{}/query_{}.csv".format(output_dir, number)
+            with self.create_connection() as conn:
+                df = pandas.read_sql_query("select 1 as cuatro, count(1) as count from Location;", conn)
+                df.to_csv(filename, index=False)
+                # cursor = conn.cursor()
+
+                # result = query(cursor)
+                # headers = [item[0] for item in cursor.description]
+
+                # if result:
+                #     self.save_to_csv(
+                #         result,
+                #         "{}/query_{}.csv".format(output_dir, number),
+                #         headers=headers,
+                #     )
+
+        except AttributeError as err:
+            print(err.args)
 
     def create_alch(self):
         engine = create_engine(
@@ -348,6 +381,7 @@ while running:
         pathfile = input("Ingrese ruta absoluta del archivo:")
         handler.create_information(pathfile or "/workspace/tsunamies.csv")
     elif option == "3":
-        handler.make_querys()
+        num = input("Ingrese el número de consulta (1 - 10):")
+        handler.make_querys(num)
     else:
         print("OPción no reconocida")
