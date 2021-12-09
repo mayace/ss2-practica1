@@ -1,10 +1,5 @@
-import collections
-import os, pyodbc, csv
-from typing import NamedTuple
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.sql.schema import Column
-from sqlalchemy.sql.sqltypes import String
+import os, pyodbc, csv, datetime, collections
+
 
 CONN_STR = "DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};UID={username};PWD={password};"
 
@@ -57,46 +52,190 @@ class EtlHandler:
     def create_connection(self):
         return pyodbc.connect(self.get_conn_str())
 
-    def create_tsunami(self, cursor, event_id, cols: ColNamesTuple):
-        cursor.execute(
-            f"""
+    def create_tsunami(self, cursor, **kwargs):
+        result = cursor.execute(
+            """
             insert into Tsunami(iida_magnitud,earthquake_magnitud, intensity, runups_num, deposits_num, max_weater_height, event_id)
-            values ({cols.iida_magnitud},{cols.earthquake_magnitud}, {cols.intensity}, {cols.runups_num}, {cols.deposits_num},{cols.max_weater_height}, {event_id})
-        """
+            output inserted.id
+            values ({iida_magnitud},{earthquake_magnitud}, {intensity}, {runups_num}, {deposits_num},{max_weater_height}, {event_id})
+        """.format(
+                **kwargs
+            )
         )
 
-    def get_tsunami_fields(self,cols: ColNamesTuple):
+        for (id,) in result:
+            return id
+
+    def create_damage(self, cursor, **kwargs):
+        result = cursor.execute(
+            """
+            insert into Damage(total_deaths,total_missing, total_missing_desc, total_injuries, total_damage, total_damage_desc, total_houses_destroyed,total_houses_damaged, tsunami_id)
+            output inserted.id
+            values ({total_deaths},{total_missing}, '{total_missing_desc}', {total_injuries}, {total_damage},'{total_damage_desc}', {total_houses_destroyed},{total_houses_damaged},{tsunami_id})
+        """.format(
+                **kwargs
+            )
+        )
+
+        for (id,) in result:
+            return id
+
+    def get_or_create_location(self, cursor, country=None, location=None):
+        result = cursor.execute(
+            "select id from Location where country like ? and location like ?;",
+            (country, location),
+        )
+
+        for (id,) in result:
+            return id
+
+        sql = """
+            insert into Location(country, location)
+            output inserted.id
+            values (?, ?);
+        """
+
+        result = cursor.execute(sql, (country, location))
+
+        for (id,) in result:
+            return id
+
+    def create_event(
+        self,
+        cursor,
+        location_id=None,
+        register_at=None,
+        latitude=None,
+        longitude=None,
+        cause_code=None,
+    ):
+        sql = """
+            insert into Event(register_at, location_id, latitude, longitude, cause_code)
+            output inserted.id
+            values (?, ?, ?, ?, ?);
+        """
+
+        result = cursor.execute(
+            sql, (register_at, location_id, latitude, longitude, cause_code)
+        )
+
+        for (id,) in result:
+            return id
+
+    def get_str_field(self, value):
+        return value.strip().lower() if value else ""
+
+    def get_float_field(self, value):
+        return value.strip().lower() if value else "null"
+
+    def parse_float(self, value):
+        try:
+            return float(value)
+        except:
+            return 0
+
+    def parse_int(self, value):
+        return int(self.parse_float(value))
+
+    def get_tsunami_fields(self, cols: ColNamesTuple):
         d = {}
-        d.setdefault("iida_magnitud", col_names.iida_magnitud or None)
+        d.setdefault("iida_magnitud", cols.iida_magnitud or "null")
+        d.setdefault("earthquake_magnitud", cols.earthquake_magnitud or "null")
+        d.setdefault("intensity", cols.intensity or "null")
+        d.setdefault("runups_num", cols.runups_num or "null")
+        d.setdefault("deposits_num", cols.deposits_num or "null")
+        d.setdefault("max_weater_height", cols.max_weater_height or "null")
+        return d
+
+    def get_damage_fields(self, cols):
+        d = {}
+        d.setdefault("total_deaths", cols.total_deaths or "null")
+        d.setdefault("total_missing", cols.total_missing or "null")
+        d.setdefault("total_missing_desc", cols.total_missing_desc or "")
+        d.setdefault("total_injuries", cols.total_injuries or "null")
+        d.setdefault("total_damage", cols.total_damage or "null")
+        d.setdefault("total_damage_desc", cols.total_damage_desc or "")
+        d.setdefault("total_houses_destroyed", cols.total_houses_destroyed or "null")
+        d.setdefault("total_houses_damaged", cols.total_houses_damaged or "null")
+        return d
+
+    def get_location_fields(self, cols):
+        d = {}
+        d.setdefault("country", self.get_str_field(cols.country))
+        d.setdefault("location", self.get_str_field(cols.location))
+        return d
+
+    def get_event_fields(self, cols):
+        register_at = None
+
+        try:
+            register_at = datetime.datetime(
+                self.parse_int(cols.year),
+                self.parse_int(cols.month) or 1,
+                self.parse_int(cols.day) or 1,
+                self.parse_int(cols.hour),
+                self.parse_int(cols.minute),
+                self.parse_int(cols.second),
+            )
+        except ValueError as err:
+            print(err.args, cols)
+            # raise
+
+        d = {}
+
+        d.setdefault("register_at", register_at)
+        d.setdefault("cause_code", self.get_str_field(cols.cause_code))
+        d.setdefault("latitude", self.parse_float(cols.latitude))
+        d.setdefault("longitude", self.parse_float(cols.longitude))
+
         return d
 
     def create_information(self, pathfile):
-        conn = self.create_connection()
-        cursor = conn.cursor()
         with open(pathfile, mode="r") as file:
             index = 0
-            for item in csv.reader(file):
-                if index > 1:
-                    cols = ColNamesTuple(*item)
-                    self.create_tsunami(
-                        cursor,
-                        1,
-                        cols,
-                    )
+            with self.create_connection() as conn:
+                cursor = conn.cursor()
+                for item in csv.reader(file):
+                    if index > 1:
+                        # print(item)
+                        cols = ColNamesTuple(*item)
 
-                    break
-                index += 1
+                        location_id = self.get_or_create_location(
+                            cursor, **self.get_location_fields(cols)
+                        )
+
+                        event_id = self.create_event(
+                            cursor,
+                            location_id=location_id,
+                            **self.get_event_fields(cols),
+                        )
+
+                        tsunami_id = self.create_tsunami(
+                            cursor,
+                            event_id=event_id,
+                            **self.get_tsunami_fields(cols),
+                        )
+
+                        self.create_damage(
+                            cursor,
+                            tsunami_id=tsunami_id,
+                            **self.get_damage_fields(cols),
+                        )
+
+                    # if index == 10:
+                    #     break
+                    index += 1
+
+                conn.commit()
 
     def create_table_location(self, cursor):
-        cursor.execute("drop table if exists Location")
+        cursor.execute("drop table if exists Location;")
         cursor.execute(
             """
         create table Location(
-            id int primary key,
+            id int identity(1,1) primary key,
             country text,
-            location text,
-            latitud float,
-            longitud text,
+            location text
         )
         """
         )
@@ -106,9 +245,13 @@ class EtlHandler:
         cursor.execute(
             """
         create table Event(
-            id int primary key,
+            id int identity(1,1) primary key,
             register_at datetime,
-            cause_code text
+            cause_code text,
+            latitude float null,
+            longitude float null,
+
+            location_id int,
         )
         """
         )
@@ -118,6 +261,7 @@ class EtlHandler:
         cursor.execute(
             """
         create table Tsunami(
+            id int identity(1,1) primary key,
             iida_magnitud float null,
             earthquake_magnitud float null,
             intensity float null,
@@ -134,6 +278,7 @@ class EtlHandler:
         cursor.execute(
             """
         create table Damage(
+            id int identity(1,1) primary key,
             total_deaths int null,
             total_missing int null,
             total_missing_desc text null,
