@@ -103,20 +103,39 @@ class EtlHandler:
     def create_event(
         self,
         cursor,
-        location_id=None,
-        register_at=None,
+        location=None,
+        country=None,
+        year=None,
+        month=None,
+        day=None,
+        hour=None,
+        minute=None,
+        second=None,
         latitude=None,
         longitude=None,
         cause_code=None,
     ):
         sql = """
-            insert into Event(register_at, location_id, latitude, longitude, cause_code)
+            insert into Event(year,month,day,hour,minute,second, location, country, latitude, longitude, cause_code)
             output inserted.id
-            values (?, ?, ?, ?, ?);
+            values (?,?,?,?,?,?, ?, ?, ?, ?, ?);
         """
 
         result = cursor.execute(
-            sql, (register_at, location_id, latitude, longitude, cause_code)
+            sql,
+            (
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                location,
+                country,
+                latitude,
+                longitude,
+                cause_code,
+            ),
         )
 
         for (id,) in result:
@@ -166,27 +185,17 @@ class EtlHandler:
         return d
 
     def get_event_fields(self, cols):
-        register_at = None
-
-        try:
-            register_at = datetime.datetime(
-                self.parse_int(cols.year),
-                self.parse_int(cols.month) or 1,
-                self.parse_int(cols.day) or 1,
-                self.parse_int(cols.hour),
-                self.parse_int(cols.minute),
-                self.parse_int(cols.second),
-            )
-        except ValueError as err:
-            print(err.args, cols)
-            # raise
-
         d = {}
-
-        d.setdefault("register_at", register_at)
+        d.setdefault("year", self.parse_int(cols.year))
+        d.setdefault("month", self.parse_int(cols.month))
+        d.setdefault("day", self.parse_int(cols.day))
+        d.setdefault("minute", self.parse_int(cols.minute))
+        d.setdefault("second", self.parse_int(cols.second))
         d.setdefault("cause_code", self.get_str_field(cols.cause_code))
         d.setdefault("latitude", self.parse_float(cols.latitude))
         d.setdefault("longitude", self.parse_float(cols.longitude))
+        d.setdefault("location", self.get_str_field(cols.location))
+        d.setdefault("country", self.get_str_field(cols.country))
 
         return d
 
@@ -200,13 +209,12 @@ class EtlHandler:
                         # print(item)
                         cols = ColNamesTuple(*item)
 
-                        location_id = self.get_or_create_location(
-                            cursor, **self.get_location_fields(cols)
-                        )
+                        # location_id = self.get_or_create_location(
+                        #     cursor, **self.get_location_fields(cols)
+                        # )
 
                         event_id = self.create_event(
                             cursor,
-                            location_id=location_id,
                             **self.get_event_fields(cols),
                         )
 
@@ -234,8 +242,8 @@ class EtlHandler:
             """
         create table Location(
             id int identity(1,1) primary key,
-            country text,
-            location text
+            country nvarchar(250),
+            location nvarchar(250)
         )
         """
         )
@@ -246,12 +254,18 @@ class EtlHandler:
             """
         create table Event(
             id int identity(1,1) primary key,
-            register_at datetime,
-            cause_code text,
+            year int null,
+            month int null,
+            day int null,
+            hour int null,
+            minute int null,
+            second int null,
+            cause_code nvarchar(250),
             latitude float null,
             longitude float null,
 
-            location_id int,
+            country nvarchar(250),
+            location nvarchar(250),
         )
         """
         )
@@ -319,15 +333,161 @@ class EtlHandler:
     def query_1(self, cursor):
         return cursor.execute("select count(1) from Location;")
 
+    def sql_1(sefl):
+        return """
+        select 'Event' as name, count(1) as count from Event
+        union select 'Tsunami' as name, count(1) as count from Tsunami
+        union select 'Damage' as name, count(1) as count from Damage;
+        """
+
+    def sql_2(sefl):
+        return """
+        SELECT  YEAR
+            ,[1]
+            ,[2]
+            ,[3]
+            ,[4]
+            ,[5]
+        FROM
+        (
+            -- source, quita times, para evitar conflijcots en pivo t
+            SELECT  i.year
+                ,i.country
+                ,i.pos
+            FROM
+            (
+                -- calcula las posicione s
+                SELECT  e.year
+                    ,e.country
+                    ,COUNT(1)                                                              AS times
+                    ,row_number() OVER (PARTITION BY e.year ORDER BY e.year,COUNT(1) DESC) AS pos
+                FROM Event e --where e.year = 1804
+                GROUP BY  e.year
+                        ,e.country
+            ) AS i
+        ) AS t pivot (MAX(country) FOR pos IN ([1], [2], [3], [4], [5])) AS p
+        """
+
+    def sql_3(self):
+        return """
+        SELECT  country
+            ,[1] AS year_1
+            ,[2] AS year_2
+            ,[3] AS year_3
+            ,[4] AS year_4
+            ,[5] AS year_5
+        FROM
+        (
+            SELECT  i.country
+                ,i.year
+                ,i.pos
+            FROM
+            (
+                SELECT  e.country
+                    ,e.year
+                    ,COUNT(1)                                                                    AS times
+                    ,row_number() over (partition by e.country ORDER BY e.country,COUNT(1) desc) AS pos
+                FROM Event e
+                GROUP BY  e.country
+                        ,e.year
+            ) AS i
+        ) AS t pivot ( MAX(year) for pos IN ([1], [2], [3], [4], [5]) ) AS p
+        """
+
+    def sql_4(self):
+        return """
+        SELECT  e.country
+            ,AVG(d.total_damage) AS damage_avg
+        FROM Damage d
+        INNER JOIN Tsunami t
+        ON t.id = d.tsunami_id
+        INNER JOIN Event e
+        ON e.id = t.event_id
+        GROUP BY  e.country
+        ORDER BY e.country
+        """
+
+    def sql_5(self):
+        return """
+        SELECT  top 5 e.country
+            ,SUM(d.total_deaths) AS total_deaths
+        FROM Damage d
+        INNER JOIN Tsunami t
+        ON t.id = d.tsunami_id
+        INNER JOIN Event e
+        ON e.id = t.event_id
+        GROUP BY  e.country
+        ORDER BY SUM(d.total_deaths) desc
+        """
+
+    def sql_6(self):
+        return """
+        SELECT  top 5 e.year
+            ,SUM(d.total_deaths) AS total_deaths
+        FROM Damage d
+        INNER JOIN Tsunami t
+        ON t.id = d.tsunami_id
+        INNER JOIN Event e
+        ON e.id = t.event_id
+        GROUP BY  e.year
+        ORDER BY SUM(d.total_deaths) desc
+        """
+
+    def sql_7(self):
+        return """
+        SELECT  top 5 e.year
+            ,COUNT(1) AS total_tsunamis
+        FROM Event e
+        GROUP BY  e.year
+        ORDER BY COUNT(1) desc
+        """
+
+    def sql_8(self):
+        return """
+        SELECT  top 5 e.country
+            ,SUM(d.total_houses_destroyed) AS total_houses_destroyed
+        FROM Damage d
+        INNER JOIN Tsunami t
+        ON t.id = d.tsunami_id
+        INNER JOIN Event e
+        ON e.id = t.event_id
+        GROUP BY  e.country
+        ORDER BY SUM(d.total_houses_destroyed) desc
+        """
+
+    def sql_9(self):
+        return """
+        SELECT  top 5 e.country
+            ,SUM(d.total_houses_damaged) AS total_houses_damaged
+        FROM Damage d
+        INNER JOIN Tsunami t
+        ON t.id = d.tsunami_id
+        INNER JOIN Event e
+        ON e.id = t.event_id
+        GROUP BY  e.country
+        ORDER BY SUM(d.total_houses_damaged) desc
+        """
+
+    def sql_10(self):
+        return """
+        SELECT  e.country
+            ,AVG(t.max_weater_height) AS avg_height
+        FROM Tsunami t
+        INNER JOIN Event e
+        ON e.id = t.event_id
+        GROUP BY  e.country
+        ORDER BY AVG(t.max_weater_height) desc
+        """
+
     def make_querys(self, number, output_dir="/workspace/results"):
         try:
-            query = getattr(
+            get_sql = getattr(
                 self,
-                "query_{}".format(number),
+                "sql_{}".format(number),
             )
             filename = "{}/query_{}.csv".format(output_dir, number)
             with self.create_connection() as conn:
-                df = pandas.read_sql_query("select 1 as cuatro, count(1) as count from Location;", conn)
+                df = pandas.read_sql_query(get_sql(), conn)
                 df.to_csv(filename, index=False)
                 # cursor = conn.cursor()
 
